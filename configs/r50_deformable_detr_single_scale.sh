@@ -7,5 +7,6 @@ PY_ARGS=${@:1}
 
 python -u main.py \
     --num_feature_levels 1 \
+    --batch_size 16 \
     --output_dir ${EXP_DIR} \
     ${PY_ARGS}

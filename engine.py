@@ -20,6 +20,9 @@ import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
+import itertools
+from terminaltables import AsciiTable
+import numpy as np
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -32,7 +35,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     header = 'Epoch: [{}]'.format(epoch)
-    print_freq = 10
+    print_freq = 1000
 
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
@@ -100,7 +103,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             output_dir=os.path.join(output_dir, "panoptic_eval"),
         )
 
-    for samples, targets in metric_logger.log_every(data_loader, 10, header):
+    for samples, targets in metric_logger.log_every(data_loader, 8000, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
@@ -150,6 +153,42 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     if coco_evaluator is not None:
         coco_evaluator.accumulate()
         coco_evaluator.summarize()
+
+        classwise=True
+        if classwise:
+            # Compute per-category AP
+            # from https://github.com/facebookresearch/detectron2/blob/03064eb5bafe4a3e5750cc7a16672daf5afe8435/detectron2/evaluation/coco_evaluation.py#L259-L283 # noqa
+
+            cocoEval = coco_evaluator.coco_eval['bbox']
+            coco = coco_evaluator.coco_eval['bbox'].cocoDt
+
+            precisions = cocoEval.eval['precision']
+            catIds = coco.getCatIds()
+            # precision has dims (iou, recall, cls, area range, max dets)
+            assert len(catIds) == precisions.shape[2]
+
+            results_per_category = []
+            for idx, catId in enumerate(catIds):
+                # area range index 0: all area ranges
+                # max dets index -1: typically 100 per image
+                nm = coco.loadCats(catId)[0]
+                # precision = precisions[:, :, idx, 0, -1]
+                precision = precisions[0, :, idx, 0, -1]
+                precision = precision[precision > -1]
+                ap = np.mean(precision) if precision.size else float('nan')
+                results_per_category.append(
+                    ('{}'.format(nm['name']),
+                     '{:0.3f}'.format(float(ap * 100))))
+
+            N_COLS = min(6, len(results_per_category) * 2)
+            results_flatten = list(itertools.chain(*results_per_category))
+            headers = ['category', 'AP'] * (N_COLS // 2)
+            results_2d = itertools.zip_longest(
+                *[results_flatten[i::N_COLS] for i in range(N_COLS)])
+            table_data = [headers]
+            table_data += [result for result in results_2d]
+            table = AsciiTable(table_data)
+            print(table.table)
     panoptic_res = None
     if panoptic_evaluator is not None:
         panoptic_res = panoptic_evaluator.summarize()
